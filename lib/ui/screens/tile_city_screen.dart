@@ -218,6 +218,30 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
   bool _isPanning = false;
   Timer? _panEndTimer;
   
+  void _updateProjectiles() {
+    if (_projectiles.isEmpty) return;
+
+    setState(() {
+      // Update existing projectiles
+      for (final projectile in _projectiles) {
+        projectile.progress += 0.1; // Speed of the bullet
+      }
+
+      // Remove completed projectiles
+      _projectiles.removeWhere((p) => p.progress >= 1.0);
+    });
+  }
+
+  void _spawnProjectile(Offset start, Offset end) {
+    setState(() {
+      _projectiles.add(Projectile(
+        id: DateTime.now().millisecondsSinceEpoch.toString() + math.Random().nextInt(1000).toString(),
+        startPoint: start,
+        endPoint: end,
+      ));
+    });
+  }
+
   // Debounce tracking
   DateTime? _lastTapTime;
   String? _lastTappedButton;
@@ -238,6 +262,10 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
   Timer? _pedestrianUpdateTimer;
   final Map<int, int> _personIdCounts = {}; // Track count of each personId (max 1 per personId - 10 unique pedestrians max)
   final math.Random _pedestrianRandom = math.Random();
+
+  // Projectiles
+  final List<Projectile> _projectiles = [];
+  Timer? _projectileTimer;
 
   @override
   void initState() {
@@ -291,6 +319,13 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
         }
       });
       
+      // Start projectile update timer (60fps)
+      _projectileTimer = Timer.periodic(const Duration(milliseconds: 16), (timer) {
+        if (mounted) {
+          _updateProjectiles();
+        }
+      });
+
       // Initialize tutorial blink animation
       _tutorialBlinkController = AnimationController(
         vsync: this,
@@ -371,6 +406,7 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
     _transformationController.removeListener(_onTransformationChanged);
     _transformationController.dispose();
     _pedestrianUpdateTimer?.cancel();
+    _projectileTimer?.cancel();
     _panEndTimer?.cancel();
     _tutorialBlinkController?.dispose();
     super.dispose();
@@ -1621,7 +1657,46 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
       machineWidgets.add(machineWidget);
     }
     
-    // 8. Wrap ground tiles in RepaintBoundary to prevent re-rendering when buildings change
+    // 8. Add projectiles on top of everything else (before buttons)
+    final projectileWidgets = <Widget>[];
+    for (final projectile in _projectiles) {
+      final currentPos = Offset.lerp(
+        projectile.startPoint,
+        projectile.endPoint,
+        projectile.progress
+      );
+
+      if (currentPos != null) {
+        final posX = currentPos.dx + centerOffset.dx;
+        final posY = currentPos.dy + centerOffset.dy;
+
+        projectileWidgets.add(
+          Positioned(
+            left: posX - 3, // Center the 6px icon
+            top: posY - 3,
+            child: Container(
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.yellowAccent.withValues(alpha: 0.8),
+                    blurRadius: 4,
+                    spreadRadius: 2,
+                  ),
+                ],
+              ),
+              child: Icon(
+                Icons.circle,
+                size: 6,
+                color: Colors.yellowAccent,
+              ),
+            ),
+          ),
+        );
+      }
+    }
+
+    // 9. Wrap ground tiles in RepaintBoundary to prevent re-rendering when buildings change
     // Ground tiles render first (behind), then objects, then machines (always on top)
     final cachedGroundLayer = RepaintBoundary(
       child: Stack(
@@ -1629,7 +1704,7 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
         children: groundTiles,
       ),
     );
-    final tiles = <Widget>[cachedGroundLayer, ...objects, ...machineWidgets];
+    final tiles = <Widget>[cachedGroundLayer, ...objects, ...machineWidgets, ...projectileWidgets];
     
     // 7. Build purchase buttons (separate from depth sorting, rendered on top)
     final buttons = <Widget>[];
@@ -2650,6 +2725,22 @@ class _TileCityScreenState extends ConsumerState<TileCityScreen> with TickerProv
         if (distance <= turretRange) {
           final success = controller.simulationEngine.forceSale(machine.id);
           if (success) {
+            // Calculate screen positions for projectile
+            if (mounted) {
+              final turretPos = _gridToScreenDouble(context, machineGridX, machineGridY);
+              // Add offset to center on tile (approximately)
+              final tileWidth = _getTileWidth(context);
+              final tileHeight = _getTileHeight(context);
+              final centerOffset = Offset(tileWidth / 2, tileHeight / 2);
+
+              final zombiePos = _gridToScreenDouble(context, pedestrian.gridX, pedestrian.gridY);
+
+              _spawnProjectile(
+                turretPos + centerOffset,
+                zombiePos + centerOffset
+              );
+            }
+
             // Turret fired successfully - remove the zombie
             pedestriansToRemove.add(pedestrian);
             // Play kill sound (coin collect sound)
@@ -5580,4 +5671,17 @@ class _PersonMachineSpritePainter extends CustomPainter {
   bool shouldRepaint(_PersonMachineSpritePainter oldDelegate) {
     return oldDelegate.imageInfo != imageInfo || oldDelegate.srcRect != srcRect;
   }
+}
+class Projectile {
+  final String id;
+  final Offset startPoint; // Screen coordinates
+  final Offset endPoint;   // Screen coordinates
+  double progress;         // 0.0 to 1.0
+
+  Projectile({
+    required this.id,
+    required this.startPoint,
+    required this.endPoint,
+    this.progress = 0.0,
+  });
 }
